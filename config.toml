@@ -1,0 +1,10 @@
+[Dataset]
+dataset_path = "../out-cabin"
+
+[Video]
+seconds_jump = 5
+batch_size = 5
+
+[Model]
+model_name = "gemma3:4b"
+think = false
