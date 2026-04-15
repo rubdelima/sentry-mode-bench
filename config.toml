@@ -8,3 +8,6 @@ batch_size = 5
 [Model]
 model_name = "gemma3:4b"
 think = false
+
+[Search]
+save_checkpoints = 5

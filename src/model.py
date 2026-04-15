@@ -1,20 +1,53 @@
 import ollama
-from typing import List, Dict 
+from typing import List
 from src.prompts import ALL_GROUPS
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from src.classes import GroupResponse, InferenceResult
     
 
 class LLMInference:
-    def __init__(self, model_name: str, think:bool=False):
+    def __init__(self, model_name: str, think:bool=False, timeout_sec: float = 25.0):
         self.model_name = model_name
         self.think = think
+        self.timeout_sec = timeout_sec
         ollama.chat(
             model=model_name,
             messages=[{"role" : "user", "content" : "Say Hi!"}],
             keep_alive="-1m"
         )
+
+    def _chat_with_timeout_retry(self, prompt: str, images: List[bytes]) -> tuple[str, str | None, float]:
+        attempts = 2
+        last_elapsed = 0.0
+
+        for _ in range(attempts):
+            start_time = time.time()
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(
+                ollama.chat,
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt, "images": images}],
+                think=self.think,
+                format="json",
+            )
+
+            try:
+                response = future.result(timeout=self.timeout_sec)
+                elapsed = time.time() - start_time
+                raw_response = response.message.content
+                return (raw_response if raw_response is not None else "{}", getattr(response.message, "thinking", None), elapsed)
+            except FutureTimeoutError:
+                last_elapsed = time.time() - start_time
+                future.cancel()
+                print(f"Chat request timed out after {self.timeout_sec} seconds. Retrying...")
+            except Exception:
+                last_elapsed = time.time() - start_time
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+        return "{}", None, last_elapsed
 
     @staticmethod
     def _extract_true_classes(parsed_response: object) -> List[str]:
@@ -39,17 +72,7 @@ class LLMInference:
 
         for group in ALL_GROUPS:
             prompt = group.get_prompt()
-            start_time = time.time()
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[{"role" : "user", "content" : prompt, "images": images}],
-                think=self.think,
-                format="json"
-            )
-            
-            finish_time = time.time() - start_time
-            raw_response = response.message.content
-            assert raw_response is not None, "LLM did not return any content"
+            raw_response, thinking, finish_time = self._chat_with_timeout_retry(prompt, images)
 
             try:
                 parsed_response = json.loads(raw_response)
@@ -62,7 +85,7 @@ class LLMInference:
                 GroupResponse(
                     group_name=group.name,
                     raw_response=raw_response,
-                    thinking=response.message.thinking if hasattr(response.message, "thinking") else None,
+                    thinking=thinking,
                     total_time=finish_time,
                     output_classes=output_classes,
                 )
